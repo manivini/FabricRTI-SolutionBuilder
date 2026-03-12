@@ -1,0 +1,187 @@
+// ============================================================
+// Predictive Maintenance & Equipment Health – KQL Schema
+// Microsoft Fabric Real-Time Intelligence
+// ============================================================
+// IMPORTANT: Run each .create / .alter block INDIVIDUALLY.
+//            Do NOT run the entire file at once — Fabric will
+//            throw a Recognition Error.
+// ============================================================
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 1: Silver Table
+// ────────────────────────────────────────────────────────────
+// The Bronze table (BronzeEquipmentTelemetry) is auto-created
+// by Eventstream when the first events arrive. 
+// We only need to create the Silver table explicitly.
+
+.create table SilverEquipmentTelemetry (
+    eventId: string,
+    timestamp: datetime,
+    machineId: string,
+    machineName: string,
+    sensorType: string,
+    sensorValue: real,
+    unit: string,
+    statusCode: int,
+    maintenanceFlag: bool,
+    operationalMode: string,
+    location: string,
+    healthScore: real,
+    severityLabel: string,
+    isAnomaly: bool,
+    timeBucket: datetime
+)
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 2: Helper Function — Severity Label
+// ────────────────────────────────────────────────────────────
+// Maps a health score (0–100) to a human-readable label.
+
+.create-or-alter function SeverityFromHealth(healthScore: real) {
+    case(
+        healthScore <= 20, "Critical",
+        healthScore <= 40, "Poor",
+        healthScore <= 60, "Fair",
+        healthScore <= 80, "Good",
+        "Excellent"
+    )
+}
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 3: Transformation Function (Bronze → Silver)
+// ────────────────────────────────────────────────────────────
+// Casts all JSON string fields to proper types, computes a
+// health score, severity label, and anomaly flag.
+
+.create-or-alter function TransformEquipmentTelemetry() {
+    BronzeEquipmentTelemetry
+    | extend
+        timestamp       = todatetime(timestamp),
+        sensorValue     = toreal(sensorValue),
+        statusCode      = toint(statusCode),
+        maintenanceFlag = tobool(maintenanceFlag),
+        healthScore     = case(
+                            toint(statusCode) == 2, toreal(10),
+                            toint(statusCode) == 1, toreal(40),
+                            toreal(sensorType) == toreal("Temperature") and toreal(sensorValue) > 80, toreal(30),
+                            toreal(sensorType) == toreal("Vibration")    and toreal(sensorValue) > 8,  toreal(35),
+                            100.0 - (toreal(sensorValue) / 2.0)
+                          ),
+        isAnomaly       = (toint(statusCode) >= 1) 
+                          or (sensorType == "Temperature" and toreal(sensorValue) > 85)
+                          or (sensorType == "Vibration"    and toreal(sensorValue) > 10)
+                          or (sensorType == "Pressure"     and toreal(sensorValue) < 3),
+        timeBucket      = bin(todatetime(timestamp), 1h)
+    | extend
+        severityLabel   = SeverityFromHealth(healthScore)
+    | project
+        eventId,
+        timestamp,
+        machineId,
+        machineName,
+        sensorType,
+        sensorValue,
+        unit,
+        statusCode,
+        maintenanceFlag,
+        operationalMode,
+        location,
+        healthScore,
+        severityLabel,
+        isAnomaly,
+        timeBucket
+}
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 4: Update Policy (auto-fires on Bronze insert)
+// ────────────────────────────────────────────────────────────
+// MUST be single-line escaped JSON. Do NOT use @'...' syntax.
+
+.alter table SilverEquipmentTelemetry policy update "[{\"IsEnabled\":true,\"Source\":\"BronzeEquipmentTelemetry\",\"Query\":\"TransformEquipmentTelemetry()\",\"IsTransactional\":false,\"PropagateIngestionProperties\":false}]"
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 5: Materialized View — Machine Health (Gold)
+// ────────────────────────────────────────────────────────────
+// Hourly average health score per machine.
+
+.create materialized-view mv_MachineHealth on table SilverEquipmentTelemetry {
+    SilverEquipmentTelemetry
+    | summarize 
+        avgHealthScore  = round(avg(healthScore), 1),
+        minHealthScore  = round(min(healthScore), 1),
+        maxSensorValue  = round(max(sensorValue), 2),
+        eventCount      = count()
+      by machineId, machineName, location, bin(timestamp, 1h)
+}
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 6: Materialized View — Anomaly Counts (Gold)
+// ────────────────────────────────────────────────────────────
+// Hourly count of anomaly events per machine and sensor type.
+
+.create materialized-view mv_AnomalyCounts on table SilverEquipmentTelemetry {
+    SilverEquipmentTelemetry
+    | where isAnomaly == true
+    | summarize 
+        anomalyCount    = count(),
+        avgSensorValue  = round(avg(sensorValue), 2),
+        worstHealth     = round(min(healthScore), 1)
+      by machineId, machineName, sensorType, bin(timestamp, 1h)
+}
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 7: Materialized View — Sensor Trends (Gold)
+// ────────────────────────────────────────────────────────────
+// 15-minute rolling averages per machine and sensor type for
+// trend charts on the dashboard.
+
+.create materialized-view mv_SensorTrends on table SilverEquipmentTelemetry {
+    SilverEquipmentTelemetry
+    | summarize 
+        avgValue  = round(avg(sensorValue), 2),
+        maxValue  = round(max(sensorValue), 2),
+        minValue  = round(min(sensorValue), 2),
+        readings  = count()
+      by machineId, machineName, sensorType, unit, bin(timestamp, 15m)
+}
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 8: Gold Function — Active Alerts
+// ────────────────────────────────────────────────────────────
+// Convenience function: returns anomaly events from the last
+// 2 hours grouped by machine, for the alerts table tile.
+
+.create-or-alter function ActiveAlerts() {
+    SilverEquipmentTelemetry
+    | where isAnomaly == true and timestamp >= ago(2h)
+    | summarize 
+        alertCount      = count(),
+        latestAlert     = max(timestamp),
+        sensors         = make_set(sensorType),
+        worstHealth     = round(min(healthScore), 1)
+      by machineId, machineName, location
+    | order by alertCount desc
+}
+
+// ────────────────────────────────────────────────────────────
+// BLOCK 9: Gold Function — Machine Status Board
+// ────────────────────────────────────────────────────────────
+// Returns the latest health score and status per machine.
+
+.create-or-alter function MachineStatusBoard() {
+    SilverEquipmentTelemetry
+    | summarize arg_max(timestamp, *) by machineId
+    | project 
+        machineId,
+        machineName,
+        location,
+        lastReading     = timestamp,
+        healthScore,
+        severityLabel,
+        sensorType,
+        sensorValue,
+        unit,
+        statusCode,
+        isAnomaly
+    | order by healthScore asc
+}

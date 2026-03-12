@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+.env.*
+*.local
+
+# OS
+Thumbs.db
+.DS_Store
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Generated demos (each SE creates their own)
+demos/
+
+# Fabric
+.fabric/
