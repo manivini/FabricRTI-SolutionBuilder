@@ -8,22 +8,20 @@ A set of **AI agent skills** + **industry templates** that, when used with GitHu
 
 ## How to Use
 
-### Option A - Use with GitHub Copilot in VS Code
+### Prerequisites
+- VS Code with **GitHub Copilot** enabled
+- Microsoft Fabric F2+ capacity (or Trial)
+
+### Steps
 1. Use this template (or clone this repo)
 2. Open in VS Code with GitHub Copilot enabled
 3. Open **Copilot Chat** and type your first message with `@workspace`:
    ```
    @workspace I need to build an RTI solution for a banking customer
    ```
-   > **Important**: Start your first message with `@workspace` - this tells Copilot to read the skill files and industry templates from this project. After the first message, you can type normally in the same chat thread.
-4. Copilot will guide you step by step - asking for industry, use case, then generating all files
+   > **Important**: Start your first message with `@workspace` — this tells Copilot to read the skill files and industry templates from this project. After the first message, you can type normally in the same chat thread.
+4. Copilot will guide you step by step — asking for industry, use case, then generating all files
 5. Import generated files to Fabric and follow the setup guide
-
-### Option B - Manual (without Copilot)
-1. Browse `industry-templates/` - pick your industry
-2. Choose a use case from the template
-3. Follow the skills (`skills/skill-1` through `skill-5`) as a step-by-step guide
-4. Use the KQL patterns in `reference/fabric-kql-quirks.md` to avoid common pitfalls
 
 ## Repo Structure
 
